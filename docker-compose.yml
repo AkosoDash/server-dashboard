@@ -1,0 +1,13 @@
+dashboard:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./server-dashboard:/app
+    command: sh -c "npm install && npm run build && npm start"
+    ports:
+      - "3005:3000"
+    environment:
+      - NEXT_PUBLIC_PROMETHEUS_URL=http://prometheus:9090
+    depends_on:
+      - prometheus
+
