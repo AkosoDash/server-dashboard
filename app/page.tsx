@@ -1,38 +1,31 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
-import StatCard from '@/components/StatCard'
-import MiniChart from '@/components/MiniChart'
-import ContainerList from '@/components/ContainerList'
+import { useEffect, useState } from 'react'
+import TopChart from '@/components/TopChart'
+import DiskList from '@/components/DiskList'
+import TempPanel from '@/components/TempPanel'
 
 function formatBytes(bytes: number | null): string {
-  if (!bytes) return '—'
-  if (bytes > 1e12) return `${(bytes / 1e12).toFixed(1)}`
-  if (bytes > 1e9) return `${(bytes / 1e9).toFixed(1)}`
-  if (bytes > 1e6) return `${(bytes / 1e6).toFixed(1)}`
-  return `${(bytes / 1e3).toFixed(0)}`
-}
-
-function bytesUnit(bytes: number | null): string {
-  if (!bytes) return ''
-  if (bytes > 1e12) return 'TB'
-  if (bytes > 1e9) return 'GB'
-  if (bytes > 1e6) return 'MB'
-  return 'KB'
+  if (!bytes) return '0'
+  if (bytes > 1e12) return `${(bytes / 1e12).toFixed(2)} TB`
+  if (bytes > 1e9) return `${(bytes / 1e9).toFixed(2)} GB`
+  if (bytes > 1e6) return `${(bytes / 1e6).toFixed(1)} MB`
+  return `${(bytes / 1e3).toFixed(0)} KB`
 }
 
 function formatNetworkRate(bps: number): string {
   if (bps > 1e6) return `${(bps / 1e6).toFixed(1)} MB/s`
-  if (bps > 1e3) return `${(bps / 1e3).toFixed(1)} KB/s`
-  return `${bps.toFixed(0)} B/s`
+  if (bps > 1e3) return `${(bps / 1e3).toFixed(1)} Kbps`
+  return `${bps.toFixed(0)} bps`
 }
 
 interface Metrics {
   cpu: { value: number | null; history: { time: string; value: number }[] }
   ram: { percent: number | null; used: number | null; total: number | null; history: { time: string; value: number }[] }
-  disk: { percent: number | null; used: number | null; total: number | null; mounts: any[] }
   network: { rx: number | null; tx: number | null; rxHistory: { time: string; value: number }[]; txHistory: { time: string; value: number }[] }
+  disks: { device: string; mountpoint: string; size: number; used: number; percent: number; readRate: number; writeRate: number }[]
   containers: { name: string; memoryBytes: number }[]
+  temps: { chip: string; sensor: string; value: number }[]
   timestamp: string
 }
 
@@ -40,30 +33,14 @@ export default function Dashboard() {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState<string>('')
-  const [tick, setTick] = useState(0)
   const [connected, setConnected] = useState(false)
 
-  const fetchMetrics = useCallback(async () => {
-    try {
-      const res = await fetch('/api/metrics', { cache: 'no-store' })
-      const data = await res.json()
-      setMetrics(data)
-      setLastUpdate(new Date().toLocaleTimeString())
-      setLoading(false)
-    } catch (e) {
-      console.error('Failed to fetch metrics', e)
-    }
-  }, [])
-
-  // SSE realtime stream
   useEffect(() => {
     let es: EventSource
 
     const connect = () => {
       es = new EventSource('/api/metrics-stream')
-
       es.onopen = () => setConnected(true)
-
       es.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data)
@@ -71,11 +48,9 @@ export default function Dashboard() {
             setMetrics(data)
             setLastUpdate(new Date().toLocaleTimeString())
             setLoading(false)
-            setTick(t => t + 1)
           }
         } catch {}
       }
-
       es.onerror = () => {
         setConnected(false)
         es.close()
@@ -87,121 +62,80 @@ export default function Dashboard() {
     return () => es?.close()
   }, [])
 
-  const cpuColor = (metrics?.cpu.value ?? 0) > 80 ? '#ff4466' : (metrics?.cpu.value ?? 0) > 60 ? '#ffcc00' : '#00d4ff'
-  const ramColor = (metrics?.ram.percent ?? 0) > 80 ? '#ff4466' : (metrics?.ram.percent ?? 0) > 60 ? '#ffcc00' : '#00ff88'
-  const diskColor = (metrics?.disk.percent ?? 0) > 85 ? '#ff4466' : (metrics?.disk.percent ?? 0) > 70 ? '#ffcc00' : '#00d4ff'
-
   return (
-    <div className="min-h-screen" style={{ background: '#080c10' }}>
+    <div style={{ minHeight: '100vh', background: '#0f1117', color: '#e2e8f0' }}>
       {/* Header */}
-      <header className="sticky top-0 z-50 border-b" style={{ borderColor: '#1e2d3d', background: 'rgba(8,12,16,0.95)', backdropFilter: 'blur(12px)' }}>
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div
-              className="w-2 h-2 rounded-full"
-              style={{
-                background: connected ? '#00ff88' : '#ff4466',
-                boxShadow: `0 0 8px ${connected ? '#00ff88' : '#ff4466'}`,
-                animation: connected ? 'pulse 2s ease-in-out infinite' : 'none',
-              }}
-            />
-            <span className="font-mono font-semibold tracking-widest text-sm uppercase" style={{ color: '#00d4ff' }}>
-              SRV<span style={{ color: '#4a6375' }}>::</span>MONITOR
-            </span>
-            <span className="text-xs font-mono px-2 py-0.5 rounded" style={{ background: connected ? 'rgba(0,255,136,0.08)' : 'rgba(255,68,102,0.08)', color: connected ? '#00ff88' : '#ff4466' }}>
-              {connected ? 'LIVE' : 'RECONNECTING...'}
-            </span>
-          </div>
-          <div className="flex items-center gap-6">
-            <span className="text-xs font-mono" style={{ color: '#4a6375' }}>
-              STREAM <span style={{ color: '#00d4ff' }}>2s</span>
-            </span>
-            <span className="text-xs font-mono" style={{ color: '#4a6375' }}>
-              LAST <span style={{ color: '#e2e8f0' }}>{lastUpdate || '—'}</span>
-            </span>
-            <button
-              onClick={fetchMetrics}
-              className="text-xs font-mono px-3 py-1.5 rounded transition-all"
-              style={{ background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.2)', color: '#00d4ff' }}
-            >
-              ↻ REFRESH
-            </button>
-          </div>
+      <header style={{ background: '#12172a', borderBottom: '1px solid #2a3350', padding: '12px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 50 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{
+            width: 8, height: 8, borderRadius: '50%',
+            background: connected ? '#00ff88' : '#ff4466',
+            boxShadow: `0 0 8px ${connected ? '#00ff88' : '#ff4466'}`,
+          }} />
+          <span style={{ fontFamily: 'IBM Plex Mono', fontWeight: 600, fontSize: 14, color: '#4a9eff', letterSpacing: 2 }}>
+            SERVER MONITOR
+          </span>
+          <span style={{
+            fontSize: 10, fontFamily: 'IBM Plex Mono', padding: '2px 8px', borderRadius: 4,
+            background: connected ? 'rgba(0,255,136,0.1)' : 'rgba(255,68,102,0.1)',
+            color: connected ? '#00ff88' : '#ff4466',
+          }}>
+            {connected ? '● LIVE' : '○ RECONNECTING'}
+          </span>
         </div>
+        <span style={{ fontFamily: 'IBM Plex Mono', fontSize: 11, color: '#4a5568' }}>
+          Updated: <span style={{ color: '#8899bb' }}>{lastUpdate || '—'}</span>
+        </span>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-8">
+      <main style={{ maxWidth: 1400, margin: '0 auto', padding: '20px 24px' }}>
         {loading ? (
-          <div className="flex items-center justify-center h-64">
-            <div className="text-center">
-              <div className="font-mono text-sm mb-2" style={{ color: '#00d4ff' }}>
-                CONNECTING TO PROMETHEUS<span className="blink">_</span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontFamily: 'IBM Plex Mono', color: '#4a9eff', fontSize: 14, marginBottom: 8 }}>
+                CONNECTING TO PROMETHEUS...
               </div>
-              <div className="text-xs font-mono" style={{ color: '#4a6375' }}>opening stream...</div>
+              <div style={{ color: '#4a5568', fontSize: 12, fontFamily: 'IBM Plex Mono' }}>opening stream</div>
             </div>
           </div>
         ) : (
-          <div className="space-y-6">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-            <div className="flex items-center gap-3">
-              <span className="text-xs font-mono tracking-widest uppercase" style={{ color: '#4a6375' }}>// system overview</span>
-              <div className="flex-1 h-px" style={{ background: '#1e2d3d' }} />
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard
+            {/* Top row: 3 charts */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+              <TopChart
+                data={metrics?.cpu.history ?? []}
                 label="CPU Usage"
-                value={metrics?.cpu.value?.toFixed(1) ?? '—'}
+                color="#4a9eff"
                 unit="%"
-                percent={metrics?.cpu.value}
-                color={cpuColor === '#ff4466' ? 'red' : cpuColor === '#ffcc00' ? 'yellow' : 'accent'}
-                index={0}
+                currentValue={`${metrics?.cpu.value?.toFixed(0) ?? 0}%`}
               />
-              <StatCard
-                label="RAM Usage"
-                value={formatBytes(metrics?.ram.used ?? null)}
-                unit={bytesUnit(metrics?.ram.used ?? null)}
-                percent={metrics?.ram.percent}
-                sub={`of ${formatBytes(metrics?.ram.total ?? null)} ${bytesUnit(metrics?.ram.total ?? null)}`}
-                color={ramColor === '#ff4466' ? 'red' : ramColor === '#ffcc00' ? 'yellow' : 'green'}
-                index={1}
+              <TopChart
+                data={metrics?.ram.history ?? []}
+                label="Memory Usage"
+                color="#4a9eff"
+                unit="%"
+                currentValue={`Used: ${formatBytes(metrics?.ram.used ?? null)} / ${formatBytes(metrics?.ram.total ?? null)}`}
               />
-              <StatCard
-                label="Disk Usage"
-                value={formatBytes(metrics?.disk.used ?? null)}
-                unit={bytesUnit(metrics?.disk.used ?? null)}
-                percent={metrics?.disk.percent}
-                sub={`of ${formatBytes(metrics?.disk.total ?? null)} ${bytesUnit(metrics?.disk.total ?? null)}`}
-                color={diskColor === '#ff4466' ? 'red' : diskColor === '#ffcc00' ? 'yellow' : 'accent'}
-                index={2}
-              />
-              <StatCard
-                label="Network RX"
-                value={metrics?.network.rx ? formatNetworkRate(metrics.network.rx) : '—'}
-                sub={`TX: ${metrics?.network.tx ? formatNetworkRate(metrics.network.tx) : '—'}`}
-                color="green"
-                index={3}
+              <TopChart
+                data={metrics?.network.txHistory ?? []}
+                data2={metrics?.network.rxHistory ?? []}
+                label="Upload"
+                label2="Download"
+                color="#4a9eff"
+                color2="#ff6b9d"
+                unit=""
+                formatter={formatNetworkRate}
+                currentValue={metrics?.network.tx ? `(${formatNetworkRate(metrics.network.tx)})` : ''}
+                currentValue2={metrics?.network.rx ? `(${formatNetworkRate(metrics.network.rx)})` : ''}
               />
             </div>
 
-            <div className="flex items-center gap-3 mt-2">
-              <span className="text-xs font-mono tracking-widest uppercase" style={{ color: '#4a6375' }}>// historical metrics (1h)</span>
-              <div className="flex-1 h-px" style={{ background: '#1e2d3d' }} />
+            {/* Bottom row: temp + disk */}
+            <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16 }}>
+              <TempPanel temps={metrics?.temps ?? []} />
+              <DiskList disks={metrics?.disks ?? []} />
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <MiniChart data={metrics?.cpu.history ?? []} label="CPU History" color="#00d4ff" unit="%" index={0} />
-              <MiniChart data={metrics?.ram.history ?? []} label="RAM History" color="#00ff88" unit="%" index={1} />
-              <MiniChart data={metrics?.network.rxHistory ?? []} label="Network RX" color="#ffcc00" unit="" index={2} formatter={formatNetworkRate} />
-              <MiniChart data={metrics?.network.txHistory ?? []} label="Network TX" color="#ff4466" unit="" index={3} formatter={formatNetworkRate} />
-            </div>
-
-            <div className="flex items-center gap-3 mt-2">
-              <span className="text-xs font-mono tracking-widest uppercase" style={{ color: '#4a6375' }}>// containers</span>
-              <div className="flex-1 h-px" style={{ background: '#1e2d3d' }} />
-            </div>
-
-            <ContainerList containers={metrics?.containers ?? []} />
 
           </div>
         )}

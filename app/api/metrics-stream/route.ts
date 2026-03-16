@@ -4,15 +4,25 @@ export const dynamic = 'force-dynamic'
 
 async function collectMetrics() {
   const [
-    cpuUsage, ramTotal, ramUsed, diskTotal, diskUsed,
-    networkRxRate, networkTxRate, cpuHistory, ramHistory,
-    networkRxHistory, networkTxHistory, containers,
+    cpuUsage,
+    ramTotal,
+    ramUsed,
+    networkRxRate,
+    networkTxRate,
+    cpuHistory,
+    ramHistory,
+    networkRxHistory,
+    networkTxHistory,
+    containers,
+    diskDevices,
+    diskFree,
+    diskReadRate,
+    diskWriteRate,
+    cpuTemp,
   ] = await Promise.all([
     queryPrometheus('100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'),
     queryPrometheus('node_memory_MemTotal_bytes'),
     queryPrometheus('node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes'),
-    queryPrometheus('node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}'),
-    queryPrometheus('node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"} - node_filesystem_free_bytes{mountpoint="/",fstype!="tmpfs"}'),
     queryPrometheus('sum(rate(node_network_receive_bytes_total{device!="lo"}[5m]))'),
     queryPrometheus('sum(rate(node_network_transmit_bytes_total{device!="lo"}[5m]))'),
     queryPrometheusRange('100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)', 60),
@@ -20,17 +30,59 @@ async function collectMetrics() {
     queryPrometheusRange('sum(rate(node_network_receive_bytes_total{device!="lo"}[5m]))', 60),
     queryPrometheusRange('sum(rate(node_network_transmit_bytes_total{device!="lo"}[5m]))', 60),
     queryPrometheusAll('container_memory_usage_bytes{name!=""}'),
+    queryPrometheusAll('node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs|squashfs|overlay"}'),
+    queryPrometheusAll('node_filesystem_free_bytes{fstype!~"tmpfs|devtmpfs|squashfs|overlay"}'),
+    queryPrometheusAll('rate(node_disk_read_bytes_total[5m])'),
+    queryPrometheusAll('rate(node_disk_written_bytes_total[5m])'),
+    queryPrometheusAll('node_hwmon_temp_celsius'),
   ])
 
   const ramPercent = ramTotal && ramUsed ? (ramUsed / ramTotal) * 100 : null
-  const diskPercent = diskTotal && diskUsed ? (diskUsed / diskTotal) * 100 : null
+
+  // Build disk list
+  const diskMap: Record<string, any> = {}
+  for (const d of diskDevices) {
+    const key = `${d.metric.device}:${d.metric.mountpoint}`
+    diskMap[key] = { device: d.metric.device, mountpoint: d.metric.mountpoint, fstype: d.metric.fstype, size: d.value, free: 0, readRate: 0, writeRate: 0 }
+  }
+  for (const d of diskFree) {
+    const key = `${d.metric.device}:${d.metric.mountpoint}`
+    if (diskMap[key]) diskMap[key].free = d.value
+  }
+  // Match disk read/write by device name
+  for (const d of diskReadRate) {
+    for (const key of Object.keys(diskMap)) {
+      if (key.startsWith(d.metric.device + ':')) diskMap[key].readRate = d.value
+    }
+  }
+  for (const d of diskWriteRate) {
+    for (const key of Object.keys(diskMap)) {
+      if (key.startsWith(d.metric.device + ':')) diskMap[key].writeRate = d.value
+    }
+  }
+
+  // Temperatures
+  const temps = cpuTemp.map(t => ({
+    chip: t.metric.chip || '',
+    sensor: t.metric.sensor || '',
+    value: parseFloat(t.value.toFixed(1)),
+  }))
 
   return {
     cpu: { value: cpuUsage ? parseFloat(cpuUsage.toFixed(1)) : null, history: cpuHistory },
     ram: { percent: ramPercent ? parseFloat(ramPercent.toFixed(1)) : null, used: ramUsed, total: ramTotal, history: ramHistory },
-    disk: { percent: diskPercent ? parseFloat(diskPercent.toFixed(1)) : null, used: diskUsed, total: diskTotal },
     network: { rx: networkRxRate, tx: networkTxRate, rxHistory: networkRxHistory, txHistory: networkTxHistory },
-    containers: containers.map(c => ({ name: c.metric.name, memoryBytes: c.value })),
+    disks: Object.values(diskMap).map((d: any) => ({
+      device: d.device,
+      mountpoint: d.mountpoint,
+      size: d.size,
+      used: d.size - d.free,
+      percent: d.size > 0 ? parseFloat(((d.size - d.free) / d.size * 100).toFixed(1)) : 0,
+      readRate: d.readRate,
+      writeRate: d.writeRate,
+    })),
+    containers: containers.map((c: any) => ({ name: c.metric.name, memoryBytes: c.value })),
+    temps,
     timestamp: new Date().toISOString(),
   }
 }
@@ -44,27 +96,13 @@ export async function GET() {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
       }
 
-      // Send immediately on connect
-      try {
-        const metrics = await collectMetrics()
-        send(metrics)
-      } catch (e) {
-        send({ error: 'Failed to fetch metrics' })
-      }
+      try { send(await collectMetrics()) } catch (e) { send({ error: 'fetch failed' }) }
 
-      // Then every 2 seconds
       const interval = setInterval(async () => {
-        try {
-          const metrics = await collectMetrics()
-          send(metrics)
-        } catch (e) {
-          send({ error: 'Failed to fetch metrics' })
-        }
+        try { send(await collectMetrics()) } catch (e) { send({ error: 'fetch failed' }) }
       }, 2000)
 
-      // Cleanup on disconnect
-      const cleanup = () => clearInterval(interval)
-      setTimeout(cleanup, 5 * 60 * 1000) // auto-close after 5 min, client reconnects
+      setTimeout(() => clearInterval(interval), 5 * 60 * 1000)
     },
   })
 
