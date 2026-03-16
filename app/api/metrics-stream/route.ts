@@ -3,6 +3,7 @@ import {
   queryPrometheusRange,
   queryPrometheusAll,
 } from "@/lib/prometheus";
+import { checkAndSendAlert, ALERT_THRESHOLDS } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 
@@ -67,13 +68,21 @@ async function collectMetrics() {
 
   const ramPercent = ramTotal && ramUsed ? (ramUsed / ramTotal) * 100 : null;
 
+  const normalizeDevice = (device: string = "") =>
+    device.replace(/^\/dev\//, "");
+
   // Build disk list
   const diskMap: Record<string, any> = {};
   for (const d of diskDevices) {
-    const key = `${d.metric.device}:${d.metric.mountpoint}`;
+    const device = d.metric.device || "";
+    const mountpoint = d.metric.mountpoint || "";
+    const deviceKey = normalizeDevice(device);
+    const key = `${deviceKey}:${mountpoint}`;
+
     diskMap[key] = {
-      device: d.metric.device,
-      mountpoint: d.metric.mountpoint,
+      device,
+      deviceKey,
+      mountpoint,
       fstype: d.metric.fstype,
       size: d.value,
       free: 0,
@@ -81,21 +90,24 @@ async function collectMetrics() {
       writeRate: 0,
     };
   }
+
   for (const d of diskFree) {
-    const key = `${d.metric.device}:${d.metric.mountpoint}`;
+    const deviceKey = normalizeDevice(d.metric.device || "");
+    const key = `${deviceKey}:${d.metric.mountpoint}`;
     if (diskMap[key]) diskMap[key].free = d.value;
   }
-  // Match disk read/write by device name
+
+  // Match disk read/write by device name (normalize /dev/ prefix)
   for (const d of diskReadRate) {
+    const deviceKey = normalizeDevice(d.metric.device || "");
     for (const key of Object.keys(diskMap)) {
-      if (key.startsWith(d.metric.device + ":"))
-        diskMap[key].readRate = d.value;
+      if (key.startsWith(deviceKey + ":")) diskMap[key].readRate = d.value;
     }
   }
   for (const d of diskWriteRate) {
+    const deviceKey = normalizeDevice(d.metric.device || "");
     for (const key of Object.keys(diskMap)) {
-      if (key.startsWith(d.metric.device + ":"))
-        diskMap[key].writeRate = d.value;
+      if (key.startsWith(deviceKey + ":")) diskMap[key].writeRate = d.value;
     }
   }
 
@@ -105,6 +117,46 @@ async function collectMetrics() {
     sensor: t.metric.sensor || "",
     value: parseFloat(t.value.toFixed(1)),
   }));
+
+  // Check for alerts
+  if (cpuUsage !== null) {
+    await checkAndSendAlert(
+      "cpu_high",
+      cpuUsage > ALERT_THRESHOLDS.CPU_USAGE,
+      `CPU usage is ${cpuUsage.toFixed(1)}% (threshold: ${ALERT_THRESHOLDS.CPU_USAGE}%)`,
+    );
+  }
+
+  if (ramPercent !== null) {
+    await checkAndSendAlert(
+      "ram_high",
+      ramPercent > ALERT_THRESHOLDS.RAM_USAGE,
+      `RAM usage is ${ramPercent.toFixed(1)}% (threshold: ${ALERT_THRESHOLDS.RAM_USAGE}%)`,
+    );
+  }
+
+  // Check disk usage for each mount
+  for (const disk of Object.values(diskMap) as any[]) {
+    if (disk.size > 0) {
+      const usagePercent = ((disk.size - disk.free) / disk.size) * 100;
+      await checkAndSendAlert(
+        `disk_high_${disk.mountpoint}`,
+        usagePercent > ALERT_THRESHOLDS.DISK_USAGE,
+        `Disk usage on ${disk.mountpoint} is ${usagePercent.toFixed(1)}% (threshold: ${ALERT_THRESHOLDS.DISK_USAGE}%)`,
+      );
+    }
+  }
+
+  // Check temperatures
+  for (const temp of temps) {
+    if (temp.value > ALERT_THRESHOLDS.TEMPERATURE) {
+      await checkAndSendAlert(
+        `temp_high_${temp.chip}_${temp.sensor}`,
+        temp.value > ALERT_THRESHOLDS.TEMPERATURE,
+        `Temperature ${temp.chip} ${temp.sensor} is ${temp.value}°C (threshold: ${ALERT_THRESHOLDS.TEMPERATURE}°C)`,
+      );
+    }
+  }
 
   return {
     cpu: {
