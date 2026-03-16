@@ -1,6 +1,10 @@
-import { queryPrometheus, queryPrometheusRange, queryPrometheusAll } from '@/lib/prometheus'
+import {
+  queryPrometheus,
+  queryPrometheusRange,
+  queryPrometheusAll,
+} from "@/lib/prometheus";
 
-export const dynamic = 'force-dynamic'
+export const dynamic = "force-dynamic";
 
 async function collectMetrics() {
   const [
@@ -20,97 +24,158 @@ async function collectMetrics() {
     diskWriteRate,
     cpuTemp,
   ] = await Promise.all([
-    queryPrometheus('100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'),
-    queryPrometheus('node_memory_MemTotal_bytes'),
-    queryPrometheus('node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes'),
-    queryPrometheus('sum(rate(node_network_receive_bytes_total{device!="lo"}[5m]))'),
-    queryPrometheus('sum(rate(node_network_transmit_bytes_total{device!="lo"}[5m]))'),
-    queryPrometheusRange('100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)', 60),
-    queryPrometheusRange('(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100', 60),
-    queryPrometheusRange('sum(rate(node_network_receive_bytes_total{device!="lo"}[5m]))', 60),
-    queryPrometheusRange('sum(rate(node_network_transmit_bytes_total{device!="lo"}[5m]))', 60),
+    queryPrometheus(
+      '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+    ),
+    queryPrometheus("node_memory_MemTotal_bytes"),
+    queryPrometheus(
+      "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
+    ),
+    queryPrometheus(
+      'sum(rate(node_network_receive_bytes_total{device!="lo"}[5m]))',
+    ),
+    queryPrometheus(
+      'sum(rate(node_network_transmit_bytes_total{device!="lo"}[5m]))',
+    ),
+    queryPrometheusRange(
+      '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+      60,
+    ),
+    queryPrometheusRange(
+      "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100",
+      60,
+    ),
+    queryPrometheusRange(
+      'sum(rate(node_network_receive_bytes_total{device!="lo"}[5m]))',
+      60,
+    ),
+    queryPrometheusRange(
+      'sum(rate(node_network_transmit_bytes_total{device!="lo"}[5m]))',
+      60,
+    ),
     queryPrometheusAll('container_memory_usage_bytes{name!=""}'),
-    queryPrometheusAll('node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs|squashfs|overlay"}'),
-    queryPrometheusAll('node_filesystem_free_bytes{fstype!~"tmpfs|devtmpfs|squashfs|overlay"}'),
-    queryPrometheusAll('rate(node_disk_read_bytes_total[5m])'),
-    queryPrometheusAll('rate(node_disk_written_bytes_total[5m])'),
-    queryPrometheusAll('node_hwmon_temp_celsius'),
-  ])
+    queryPrometheusAll(
+      'node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs|squashfs|overlay"}',
+    ),
+    queryPrometheusAll(
+      'node_filesystem_free_bytes{fstype!~"tmpfs|devtmpfs|squashfs|overlay"}',
+    ),
+    queryPrometheusAll("rate(node_disk_read_bytes_total[5m])"),
+    queryPrometheusAll("rate(node_disk_written_bytes_total[5m])"),
+    queryPrometheusAll("node_hwmon_temp_celsius"),
+  ]);
 
-  const ramPercent = ramTotal && ramUsed ? (ramUsed / ramTotal) * 100 : null
+  const ramPercent = ramTotal && ramUsed ? (ramUsed / ramTotal) * 100 : null;
 
   // Build disk list
-  const diskMap: Record<string, any> = {}
+  const diskMap: Record<string, any> = {};
   for (const d of diskDevices) {
-    const key = `${d.metric.device}:${d.metric.mountpoint}`
-    diskMap[key] = { device: d.metric.device, mountpoint: d.metric.mountpoint, fstype: d.metric.fstype, size: d.value, free: 0, readRate: 0, writeRate: 0 }
+    const key = `${d.metric.device}:${d.metric.mountpoint}`;
+    diskMap[key] = {
+      device: d.metric.device,
+      mountpoint: d.metric.mountpoint,
+      fstype: d.metric.fstype,
+      size: d.value,
+      free: 0,
+      readRate: 0,
+      writeRate: 0,
+    };
   }
   for (const d of diskFree) {
-    const key = `${d.metric.device}:${d.metric.mountpoint}`
-    if (diskMap[key]) diskMap[key].free = d.value
+    const key = `${d.metric.device}:${d.metric.mountpoint}`;
+    if (diskMap[key]) diskMap[key].free = d.value;
   }
   // Match disk read/write by device name
   for (const d of diskReadRate) {
     for (const key of Object.keys(diskMap)) {
-      if (key.startsWith(d.metric.device + ':')) diskMap[key].readRate = d.value
+      if (key.startsWith(d.metric.device + ":"))
+        diskMap[key].readRate = d.value;
     }
   }
   for (const d of diskWriteRate) {
     for (const key of Object.keys(diskMap)) {
-      if (key.startsWith(d.metric.device + ':')) diskMap[key].writeRate = d.value
+      if (key.startsWith(d.metric.device + ":"))
+        diskMap[key].writeRate = d.value;
     }
   }
 
   // Temperatures
-  const temps = cpuTemp.map(t => ({
-    chip: t.metric.chip || '',
-    sensor: t.metric.sensor || '',
+  const temps = cpuTemp.map((t) => ({
+    chip: t.metric.chip || "",
+    sensor: t.metric.sensor || "",
     value: parseFloat(t.value.toFixed(1)),
-  }))
+  }));
 
   return {
-    cpu: { value: cpuUsage ? parseFloat(cpuUsage.toFixed(1)) : null, history: cpuHistory },
-    ram: { percent: ramPercent ? parseFloat(ramPercent.toFixed(1)) : null, used: ramUsed, total: ramTotal, history: ramHistory },
-    network: { rx: networkRxRate, tx: networkTxRate, rxHistory: networkRxHistory, txHistory: networkTxHistory },
+    cpu: {
+      value: cpuUsage ? parseFloat(cpuUsage.toFixed(1)) : null,
+      history: cpuHistory,
+    },
+    ram: {
+      percent: ramPercent ? parseFloat(ramPercent.toFixed(1)) : null,
+      used: ramUsed,
+      total: ramTotal,
+      history: ramHistory,
+    },
+    network: {
+      rx: networkRxRate,
+      tx: networkTxRate,
+      rxHistory: networkRxHistory,
+      txHistory: networkTxHistory,
+    },
     disks: Object.values(diskMap).map((d: any) => ({
       device: d.device,
       mountpoint: d.mountpoint,
       size: d.size,
       used: d.size - d.free,
-      percent: d.size > 0 ? parseFloat(((d.size - d.free) / d.size * 100).toFixed(1)) : 0,
+      percent:
+        d.size > 0
+          ? parseFloat((((d.size - d.free) / d.size) * 100).toFixed(1))
+          : 0,
       readRate: d.readRate,
       writeRate: d.writeRate,
     })),
-    containers: containers.map((c: any) => ({ name: c.metric.name, memoryBytes: c.value })),
+    containers: containers.map((c: any) => ({
+      name: c.metric.name,
+      memoryBytes: c.value,
+    })),
     temps,
     timestamp: new Date().toISOString(),
-  }
+  };
 }
 
 export async function GET() {
-  const encoder = new TextEncoder()
+  const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
     async start(controller) {
       const send = (data: object) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      };
+
+      try {
+        send(await collectMetrics());
+      } catch (e) {
+        send({ error: "fetch failed" });
       }
 
-      try { send(await collectMetrics()) } catch (e) { send({ error: 'fetch failed' }) }
-
       const interval = setInterval(async () => {
-        try { send(await collectMetrics()) } catch (e) { send({ error: 'fetch failed' }) }
-      }, 2000)
+        try {
+          send(await collectMetrics());
+        } catch (e) {
+          send({ error: "fetch failed" });
+        }
+      }, 2000);
 
-      setTimeout(() => clearInterval(interval), 5 * 60 * 1000)
+      setTimeout(() => clearInterval(interval), 5 * 60 * 1000);
     },
-  })
+  });
 
   return new Response(stream, {
     headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
     },
-  })
+  });
 }
